@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Doc to Markdown</title>
+<style>
+  :root { --bg:#fafaf9; --fg:#1c1917; --muted:#78716c; --line:#d6d3d1; --accent:#2563eb; --card:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161513; --fg:#f5f5f4; --muted:#a8a29e; --line:#44403c; --accent:#60a5fa; --card:#1f1d1b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:48px 16px; }
+  h1 { margin:0 0 4px; font-size:1.6rem; }
+  p.sub { margin:0 0 24px; color:var(--muted); }
+  #drop { display:block; border:2px dashed var(--line); border-radius:12px; padding:48px 16px; text-align:center;
+          background:var(--card); cursor:pointer; transition:border-color .15s; }
+  #drop.over, #drop:focus-within { border-color:var(--accent); }
+  #drop input { position:absolute; opacity:0; width:1px; height:1px; }
+  #status { margin:16px 0; min-height:1.5em; color:var(--muted); }
+  #status.err { color:#dc2626; }
+  #out { display:none; }
+  .bar { display:flex; gap:8px; margin-bottom:8px; }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  textarea { width:100%; height:360px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--card);
+             color:var(--fg); font:13px/1.5 ui-monospace, Menlo, monospace; resize:vertical; }
+  footer { margin-top:32px; color:var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Doc to Markdown</h1>
+  <p class="sub">Drop a <code>.docx</code> or <code>.pages</code> file. It's converted in your browser; nothing is uploaded.</p>
+
+  <label id="drop">
+    <input id="file" type="file" accept=".docx,.pages">
+    <strong>Drop a file here</strong> or click to choose
+  </label>
+  <div id="status" role="status">Loading converter…</div>
+
+  <div id="out">
+    <div class="bar">
+      <button class="primary" id="dl">Download .md</button>
+      <button id="copy">Copy</button>
+    </div>
+    <textarea id="md" readonly></textarea>
+  </div>
+  <footer>Images, tables and links in <code>.pages</code> files are not converted.</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const status = (t, err = false) => { $("status").textContent = t; $("status").className = err ? "err" : ""; };
+let py, name = "document";
+
+const ready = (async () => {
+  py = await loadPyodide();
+  py.FS.writeFile("/doctomdconvert.py", await (await fetch("doctomdconvert.py")).text());
+  py.runPython(`
+import sys; sys.path.insert(0, "/")
+import doctomdconvert
+def run(path):
+    try:
+        return str(doctomdconvert.convert(path))
+    except SystemExit as e:
+        raise ValueError(str(e))
+    except Exception as e:
+        raise ValueError("Could not read this file (" + type(e).__name__ + ")")
+`);
+  status("Ready.");
+})().catch(e => status("Failed to load converter: " + e.message, true));
+
+async function convert(file) {
+  const ext = file.name.split(".").pop().toLowerCase();
+  if (!["docx", "pages"].includes(ext)) return status("Please choose a .docx or .pages file.", true);
+  await ready;
+  if (!py) return;
+  status("Converting…");
+  try {
+    const src = "/in." + ext;
+    py.FS.writeFile(src, new Uint8Array(await file.arrayBuffer()));
+    const out = py.globals.get("run")(src);
+    $("md").value = new TextDecoder().decode(py.FS.readFile(out));
+    name = file.name.replace(/\.[^.]+$/, "");
+    $("out").style.display = "block";
+    status(`Converted ${file.name}.`);
+  } catch (e) {
+    $("out").style.display = "none";
+    status(String(e.message).trim().split("\n").pop().replace(/^ValueError: /, ""), true);
+  }
+}
+
+$("file").onchange = e => e.target.files[0] && convert(e.target.files[0]);
+const drop = $("drop");
+["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => e.dataTransfer.files[0] && convert(e.dataTransfer.files[0]));
+$("copy").onclick = async () => { await navigator.clipboard.writeText($("md").value); status("Copied."); };
+$("dl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([$("md").value], { type: "text/markdown" }));
+  a.download = name + ".md";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+</script>
+</body>
+</html>
